@@ -205,6 +205,7 @@ struct dragonfly_param
     int chunk_size; /* full-sized packets are broken into smaller chunks.*/
     int global_k_picks; /* k number of connections to select from when doing local adaptive routing */
     int adaptive_threshold; 
+    int adaptive_threshold_upper;
     // derived parameters
     int num_cn;
     int intra_grp_radix;
@@ -1466,6 +1467,7 @@ void dragonfly_print_params(const dragonfly_param *p, FILE * st)
     fprintf(st,"\trouter_delay =           %.2f\n",p->router_delay);
     fprintf(st,"\trouting =                %s\n",get_routing_alg_chararray(routing));
     fprintf(st,"\tadaptive_threshold =     %d\n",p->adaptive_threshold);
+    fprintf(st,"\tadaptive_threshold_upper=%d\n",p->adaptive_threshold_upper);
     fprintf(st,"\tmax hops notification =  %d\n",p->max_hops_notify);
     fprintf(st,"\tnum_qos_levels =         %d\n",p->num_qos_levels);
     fprintf(st,"\tqos_bucket_max =         %d\n",qos_bucket_max);
@@ -1633,6 +1635,12 @@ static void dragonfly_read_config(const char * anno, dragonfly_param *params)
         if(!myRank)
             fprintf(stderr, "Adaptive Minimal Routing Threshold not specified: setting to default = 0. (Will consider minimal and nonminimal routes based on scoring metric alone)\n");
         p->adaptive_threshold = 0;
+    }
+    rc = configuration_get_value_int(&config, "PARAMS", "adaptive_threshold_upper", anno, &p->adaptive_threshold_upper);
+    if (rc) {
+        if(!myRank)
+            fprintf(stderr, "Adaptive Minimal Routing UPPER Threshold not specified: setting to default = %d. (Will consider minimal and nonminimal routes based on scoring metric alone)\n", INT_MAX);
+        p->adaptive_threshold_upper = INT_MAX;
     }
 
     configuration_get_value(&config, "PARAMS", "cn_sample_file", anno, cn_sample_file,
