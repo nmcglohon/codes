@@ -1164,6 +1164,91 @@ static void free_tmp(void * ptr)
         free(dfly);
 }
 
+/* Checks if port occupancy exceeds the adaptive routing upper threshold. Uses
+ * the port score as a proxy for the occupancy measurement.
+ *     This could be combined with dfdally_score_connection() since most of the
+ *     checks are identical. However, we only need to check the best connections.
+ *     If the best conns exceed the threshold, then all conns will be exceed the
+ *     threshold as well.
+ *     */
+static inline int exceed_adaptive_upper_threshold(router_state *s, terminal_dally_message *msg, Connection conn, int score, conn_minimality_t c_minimality)
+{
+    int port = conn.port;
+    int vcg = get_vcg_from_category(msg);
+    int vcs_per_qos = s->params->num_vcs / s->params->num_qos_levels;
+    int base_vc = vcg * vcs_per_qos;
+
+    int vc_size = 0;
+    int peak_allocation = 0;
+    
+    if(port < s->params->intra_grp_radix) {
+        vc_size = s->params->local_vc_size;
+    }
+    else if(port < (s->params->intra_grp_radix +
+        s->params->num_global_channels))
+    {
+        vc_size = s->params->global_vc_size;
+    }
+
+    switch (scoring) {
+        case ALPHA: //considers vc occupancy and queued count only
+            for(int k=0; k < s->params->num_vcs; k++)
+            {
+                peak_allocation += vc_size;
+            }
+            break;
+        case BETA: //considers vc occupancy and queued count multiplied by the number of minimal hops to destination from the potential next stop
+            tw_error(TW_LOC, "Beta scoring not implemented");
+            break;
+        case GAMMA: //delta scoring but higher is better
+            tw_error(TW_LOC, "Gamma scoring not implemented");
+            break;
+        case DELTA: //alpha but biased 2:1 toward minimal
+            for(int k=0; k < s->params->num_vcs; k++)
+            {
+                peak_allocation += vc_size;
+            }
+
+            if (c_minimality != C_MIN)
+                peak_allocation = peak_allocation * 2;
+            break;
+        case EPSILON: // consider queue count and the occupancy of my vc and higher priority vcs only
+            for(int k = 0; k < base_vc + vcs_per_qos; k++)
+            {
+                peak_allocation += vc_size;
+            }
+            break;
+        case ZETA: // consider queue count and the occupancy of my vc only
+            for(int k = base_vc; k < base_vc + vcs_per_qos; k++)
+            {
+                peak_allocation += vc_size;
+            }
+            break;
+        default:
+            tw_error(TW_LOC, "Unsupported Scoring Protocol Error\n");
+    }
+
+    if(scoring_factors != NULL)
+    {
+        // if the factor is >0, then bias towards minimal by increasing the non-minimal score
+        if(scoring_factors[vcg] > 0 && c_minimality == C_NONMIN)
+        {
+            peak_allocation = peak_allocation * scoring_factors[vcg];
+        }
+        // if the factor is <0, then bias towards non-minimal by increasing the minimal score
+        if(scoring_factors[vcg] < 0 && c_minimality == C_MIN)
+        {
+            peak_allocation = peak_allocation * scoring_factors[vcg] * -1;
+        }
+    }
+
+    float pct_occupied = (float)score/peak_allocation * 100;
+    if (peak_allocation > 0 &&
+            pct_occupied >= s->params->adaptive_threshold_upper)
+        return true;
+
+    return false;
+}
 static int dfdally_score_connection(router_state *s, tw_bf *bf, terminal_dally_message *msg, tw_lp *lp, Connection conn, conn_minimality_t c_minimality)
 {
     int score = 0;
@@ -1636,11 +1721,12 @@ static void dragonfly_read_config(const char * anno, dragonfly_param *params)
             fprintf(stderr, "Adaptive Minimal Routing Threshold not specified: setting to default = 0. (Will consider minimal and nonminimal routes based on scoring metric alone)\n");
         p->adaptive_threshold = 0;
     }
+    /* Needs a better name for this parameter. */
     rc = configuration_get_value_int(&config, "PARAMS", "adaptive_threshold_upper", anno, &p->adaptive_threshold_upper);
     if (rc) {
         if(!myRank)
-            fprintf(stderr, "Adaptive Minimal Routing UPPER Threshold not specified: setting to default = %d. (Will consider minimal and nonminimal routes based on scoring metric alone)\n", INT_MAX);
-        p->adaptive_threshold_upper = INT_MAX;
+            fprintf(stderr, "Adaptive Minimal Routing UPPER Threshold not specified: setting to default = -1 and disregaring. (Will consider congested minimal and nonminimal routes based on scoring metric alone)\n");
+        p->adaptive_threshold_upper = -1;
     }
 
     configuration_get_value(&config, "PARAMS", "cn_sample_file", anno, cn_sample_file,
