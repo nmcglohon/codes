@@ -1201,7 +1201,7 @@ static inline int dfdally_apply_advanced_scoring(router_state *s, tw_bf *bf, ter
  *     If the best conns exceed the threshold, then all conns will exceed the
  *     threshold as well.
  *     */
-static inline bool exceed_adaptive_upper_threshold(router_state *s, tw_bf *bf, terminal_dally_message *msg, Connection conn, conn_minimality_t c_minimality, int score)
+static inline bool exceed_adaptive_upper_threshold(router_state *s, tw_bf *bf, terminal_dally_message *msg, Connection conn, conn_minimality_t c_minimality)
 {
     int port = conn.port;
     if (port == -1 || s->params->adaptive_threshold_upper == -1) {
@@ -1215,6 +1215,7 @@ static inline bool exceed_adaptive_upper_threshold(router_state *s, tw_bf *bf, t
     int base_vc = vcg * vcs_per_qos;
 
     int vc_size = 0;
+    int vc_score = 0;
     int peak_allocation = 0;
     
     if(port < s->params->intra_grp_radix) {
@@ -1230,6 +1231,7 @@ static inline bool exceed_adaptive_upper_threshold(router_state *s, tw_bf *bf, t
         case ALPHA: //considers vc occupancy and queued count only
             for(int k=0; k < s->params->num_vcs; k++)
             {
+                vc_score += s->vc_occupancy[port][k];
                 peak_allocation += vc_size;
             }
             break;
@@ -1242,21 +1244,21 @@ static inline bool exceed_adaptive_upper_threshold(router_state *s, tw_bf *bf, t
         case DELTA: //alpha but biased 2:1 toward minimal
             for(int k=0; k < s->params->num_vcs; k++)
             {
+                vc_score += s->vc_occupancy[port][k];
                 peak_allocation += vc_size;
             }
-
-            if (c_minimality != C_MIN)
-                peak_allocation = peak_allocation * 2;
             break;
         case EPSILON: // consider queue count and the occupancy of my vc and higher priority vcs only
             for(int k = 0; k < base_vc + vcs_per_qos; k++)
             {
+                vc_score += s->vc_occupancy[port][k];
                 peak_allocation += vc_size;
             }
             break;
         case ZETA: // consider queue count and the occupancy of my vc only
             for(int k = base_vc; k < base_vc + vcs_per_qos; k++)
             {
+                vc_score += s->vc_occupancy[port][k];
                 peak_allocation += vc_size;
             }
             break;
@@ -1264,22 +1266,7 @@ static inline bool exceed_adaptive_upper_threshold(router_state *s, tw_bf *bf, t
             tw_error(TW_LOC, "Unsupported Scoring Protocol Error\n");
     }
 
-    // Scoring factors are not used with DELTA scoring
-    if(scoring != DELTA && scoring_factors != NULL)
-    {
-        // if the factor is >0, then bias towards minimal by increasing the non-minimal score
-        if(scoring_factors[vcg] > 0 && c_minimality == C_NONMIN)
-        {
-            peak_allocation = peak_allocation * scoring_factors[vcg];
-        }
-        // if the factor is <0, then bias towards non-minimal by increasing the minimal score
-        if(scoring_factors[vcg] < 0 && c_minimality == C_MIN)
-        {
-            peak_allocation = peak_allocation * scoring_factors[vcg] * -1;
-        }
-    }
-
-    float pct_occupied = (float)score/peak_allocation * 100;
+    float pct_occupied = ( (float)vc_score/peak_allocation ) * 100;
     if (peak_allocation > 0 &&
             pct_occupied >= s->params->adaptive_threshold_upper)
         return true;
@@ -2554,7 +2541,7 @@ void issue_rtr_bw_monitor_event(router_state *s, tw_bf *bf, terminal_dally_messa
     if(dragonfly_rtr_rtg_log != NULL){
         for(int j = 0; j < num_qos_levels; j++){
             if(s->route_min_score[j] > 0 || s->route_lower_threshold[j] > 0 || s->route_upper_threshold[j] > 0 || s->route_nonmin_score[j] > 0){
-                fprintf(dragonfly_rtr_rtg_log, "\n %.0f %d %d %d %d %d %d", tw_now(lp), s->router_id, j, s->route_min_score[j], s->route_min_score_only[j], s->route_lower_threshold[j], s->route_upper_threshold[j], s->route_nonmin_score[j]);
+                fprintf(dragonfly_rtr_rtg_log, "\n %.0f %d %d %d %d %d %d %d", tw_now(lp), s->router_id, j, s->route_min_score[j], s->route_min_score_only[j], s->route_lower_threshold[j], s->route_upper_threshold[j], s->route_nonmin_score[j]);
             
                 s->route_min_score[j] = 0;
                 s->route_min_score_only[j] = 0;
@@ -3413,7 +3400,7 @@ void router_dally_init(router_state * r, tw_lp * lp)
     if(dragonfly_rtr_rtg_log == NULL)
     {
         dragonfly_rtr_rtg_log = fopen(rtr_rtg_log, "w+");
-        fprintf(dragonfly_rtr_rtg_log, "\n time-stamp router-id qos-level by-min-score by-threshold by-nonmin-score");
+        fprintf(dragonfly_rtr_rtg_log, "\n time-stamp router-id qos-level by-min-score by-min-score-only by-lower-threshold by-upper-threshold by-nonmin-score");
     }
     #endif
 
@@ -6005,10 +5992,10 @@ static Connection dfdally_prog_adaptive_routing(router_state *s, tw_bf *bf, term
     min_score = dfdally_apply_advanced_scoring(s, bf, msg, best_min_conn, lp, C_MIN, min_score);
     nonmin_score = dfdally_apply_advanced_scoring(s, bf, msg, best_nonmin_conn, lp, C_NONMIN, nonmin_score);
 
-    bool upper_threshold_exceed = false;
-    if (exceed_adaptive_upper_threshold(s, bf, msg, best_min_conn, C_MIN, min_score) == true &&
-            exceed_adaptive_upper_threshold(s, bf, msg, best_nonmin_conn, C_NONMIN, nonmin_score) == true){ // if buffer are over capacity
-        upper_threshold_exceed = true;
+    bool upper_threshold_exceeded = false;
+    if (exceed_adaptive_upper_threshold(s, bf, msg, best_min_conn, C_MIN) == true &&
+            exceed_adaptive_upper_threshold(s, bf, msg, best_nonmin_conn, C_NONMIN) == true){ // if buffer are over capacity
+        upper_threshold_exceeded = true;
     }
         
 
@@ -6018,17 +6005,20 @@ static Connection dfdally_prog_adaptive_routing(router_state *s, tw_bf *bf, term
     if (s->params->num_qos_levels > 1)
         vcg = get_vcg_from_category(msg);
 
+    if (upper_threshold_exceeded)
+        s->route_upper_threshold[vcg]++;
+
     if (min_score <= nonmin_score) {
         s->route_min_score[vcg]++;
-        if (min_score > adaptive_threshold && !upper_threshold_exceed)
+        if (min_score > adaptive_threshold && !upper_threshold_exceeded)
             s->route_min_score_only[vcg]++;
     } else {
         if (min_score <= adaptive_threshold){
             s->route_lower_threshold[vcg]++;
         } else {
-            if (upper_threshold_exceed)
-                s->route_upper_threshold[vcg]++;
-            else
+            //if (upper_threshold_exceeded)
+            //    s->route_upper_threshold[vcg]++;
+            //else
                 s->route_nonmin_score[vcg]++;
         }
     }
@@ -6036,7 +6026,7 @@ static Connection dfdally_prog_adaptive_routing(router_state *s, tw_bf *bf, term
 
     if (min_score <= adaptive_threshold ||
             min_score <= nonmin_score ||
-            upper_threshold_exceed)
+            upper_threshold_exceeded)
         return best_min_conn;
     else {
         msg->path_type = NON_MINIMAL;
