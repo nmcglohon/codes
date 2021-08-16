@@ -990,16 +990,17 @@ static void gen_synthetic_tr(nw_state * s, tw_bf * bf, nw_message * m, tw_lp * l
         {
 	    /* Special case next-group pattern 8320-node system*/
 	    /* 128 nodes per group
-	     * 8318 and 8319 are not NN job
 	     * */
             length = 1;
             dest_svr = (int*) calloc(1, sizeof(int));
 	        dest_svr[0] = (s->local_rank + 128) % num_clients;
-	        if (s->local_rank + 12 == 8318)
+	        /* 8318 and 8319 are not NN job
+            if (s->local_rank + 12 == 8318)
 		        dest_svr[0] = 126;
 	        if (s->local_rank + 12 == 8319)
 		        dest_svr[0] = 127;
-            }
+            */
+        }
         break;
         default:
             tw_error(TW_LOC, "Undefined traffic pattern");
